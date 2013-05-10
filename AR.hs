@@ -11,6 +11,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Data.List
 import Data.Maybe
+import Data.Time
 import Debug.Trace
 import Foreign
 import Foreign.C.String
@@ -246,6 +247,7 @@ data ARState = ARState { width    :: Int
                        , dist     :: Int
                        , unshown  :: [Maybe Side]
                        , shown    :: [Maybe Side]
+                       , lastTick :: UTCTime
                        }
              deriving (Show)
 
@@ -275,7 +277,8 @@ main = do success <- initialize
           height <- fromIntegral <$> getHeight
           ds <- evalRandIO dispSequence
           putStrLn $ "Display sequence: " ++ show ds
-          evalStateT (loop Idle) $ ARState width height False 0 ds []
+          now <- liftIO getCurrentTime
+          evalStateT (loop Idle) $ ARState width height False 0 ds [] now
 
 loop :: Mode -> StateT ARState IO ()
 loop mode = do
@@ -298,8 +301,10 @@ loop mode = do
                         modify $ \s -> s { dist = n }
 
                     KeySpace       -> do
+                        now <- liftIO getCurrentTime
                         modify $ \s -> s { unshown = reverse (shown s) ++ unshown s
                                          , shown = []
+                                         , lastTick = (addUTCTime (-100) now)
                                          }
                         s <- get
                         liftIO . putStrLn $ "Beginning sequence with state: " ++ show s
@@ -313,20 +318,32 @@ loop mode = do
                         liftIO $ putStrLn "Cancelling sequence"
                         loop Idle
                     _ -> return ()
-                (side, rest) <- (head &&& tail) <$> gets unshown
-                modify $ \s -> s { unshown = rest
-                                 , shown = side:shown s
-                                 }
-                liftIO . putStrLn $ "Side: " ++ show side
-                let chev = chevron side markers
-                focus <- liftIO $ case listToMaybe markers of
-                                      Just m  -> getPosition m >>= return . Just
-                                      Nothing -> return Nothing
-                mapM_ (readOnly . drawChevron focus False) $ chev
-                finished <- null <$> gets unshown
-                when finished $ do
-                    liftIO $ putStrLn "Finished sequence"
-                    loop Idle
+                now <- liftIO getCurrentTime
+                lastTick' <- gets lastTick
+                side' <-
+                    if diffUTCTime now lastTick' >= 1
+                    then do
+                        (side', rest) <- (listToMaybe &&& tail) <$> gets unshown
+                        case side' of
+                            Just side -> do
+                                modify $ \s -> s { unshown = rest
+                                                 , shown = side:shown s
+                                                 , lastTick = now
+                                                 }
+                                liftIO . putStrLn $ "Side: " ++ show side
+                                return (Just side)
+                            Nothing -> return Nothing
+                    else Just . head <$> gets shown
+                case side' of
+                    Just side -> do
+                        let chev = chevron side markers
+                        focus <- liftIO $ case listToMaybe markers of
+                                              Just m  -> getPosition m >>= return . Just
+                                              Nothing -> return Nothing
+                        mapM_ (readOnly . drawChevron focus False) $ chev
+                    Nothing -> do
+                        liftIO $ putStrLn "Finished sequence"
+                        loop Idle
         when (null markers) $ do
             liftIO $ putStrLn "ERROR: Lost marker lock"
             loop Idle
