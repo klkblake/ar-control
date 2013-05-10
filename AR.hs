@@ -3,7 +3,7 @@
 import Prelude hiding (Left, Right)
 
 import Control.Applicative
-import Control.Arrow (first)
+import Control.Arrow (first, (&&&))
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Random
@@ -29,10 +29,7 @@ foreign import ccall "binding.h getKey" c_getKey :: IO CInt
 
 data Key = KeyNone
          | KeyEscape
-         | KeyLeft
-         | KeyUp
-         | KeyRight
-         | KeyDown
+         | KeySpace
          | KeyToggleRects
          | KeyDist Int
          | KeyOther CInt
@@ -42,20 +39,11 @@ getKey :: IO Key
 getKey = toKey <$> c_getKey
     where toKey (-1)  = KeyNone
           toKey 27    = KeyEscape
-          toKey 65361 = KeyLeft
-          toKey 65362 = KeyUp
-          toKey 65363 = KeyRight
-          toKey 65364 = KeyDown
+          toKey 32    = KeySpace
           toKey 114   = KeyToggleRects -- 'r'
           toKey 45    = KeyDist (-1)   -- '-'
           toKey key | key >= 48 && key < 58 = KeyDist (fromIntegral $ key - 48) -- '0'..'9'
                     | otherwise             = KeyOther key
-
-keySelect KeyLeft  = True
-keySelect KeyUp    = True
-keySelect KeyRight = True
-keySelect KeyDown  = True
-keySelect _        = False
 
 foreign import ccall "binding.h getMarkers" c_getMarkers :: IO (Ptr CInt)
 foreign import ccall "binding.h getMarkersLen" c_getMarkersLen :: IO CSize
@@ -211,7 +199,7 @@ textPosition side focus = do
                         Down  -> Point cx       (h - hb)
 
 drawChevron :: Maybe Point -> Bool -> Chevron -> ReaderT ARState IO ()
-drawChevron focus selected (Chevron side text _ _) = do
+drawChevron focus selected (Chevron side text) = do
         useRects <- asks useRects
         pos <- dropIO $ textPosition side focus
         points <- dropIO $ chevronPoints side focus
@@ -240,70 +228,13 @@ instance Random Side where
     randomR (l, u) = first toEnum . randomR (fromEnum l, fromEnum u)
     random = randomR (minBound, maxBound)
 
-data Action = LightOn
-            | LightOff
-            | Selected Side
-            deriving (Show, Eq, Ord)
-
-runAction LightOn = putStrLn "Switched light on"
-runAction LightOff = putStrLn "Switched light off"
-runAction (Selected side) = putStrLn $ "Selected side " ++ show side
-
 data Chevron = Chevron { chevSide :: Side
                        , chevText :: String
-                       , chevState :: Mode
-                       , chevAction :: Maybe Action
                        }
                        deriving (Show, Eq, Ord)
 
-actions = [ (Marker 123, [ Chevron Left "On" Idle (Just LightOn)
-                         , Chevron Right "Off" Idle (Just LightOff)
-                         ])
-          ]
-
-markerActions = concat . maybeToList . flip lookup actions
-
-chevrons _ [] _            = []
-
--- For testing
-chevrons Nothing _ _   = []
-chevrons (Just side) (_:[]) _ = [Chevron side (show side) Idle (Just $ Selected side)]
-
-{-
-chevrons (m:[]) View     = if null (markerActions m)
-                           then []
-                           else [ Chevron Up "Interact" (Interact m) Nothing ]
-
-chevrons ms@(m:_) View   = if null (concat . map markerActions $ ms)
-                           then []
-                           else [ Chevron Up "Select Marker..." (Select m) Nothing ]
-
-chevrons ms (Select m)   = [ Chevron Up "Cancel" (View) Nothing
-                           , Chevron Left "Previous" (Select $ before m ms) Nothing
-                           , Chevron Right "Next" (Select $ after m ms) Nothing
-                           ] ++ if null (markerActions m)
-                                then []
-                                else [ Chevron Down "Interact" (Interact m) Nothing ]
-    where before m ms = let ms' = takeWhile (/= m) ms
-                        in if null ms'
-                           then last ms
-                           else last ms'
-          after m ms = let ms' = dropWhile (/= m) ms
-                       in if length ms' >= 2
-                          then head $ tail ms'
-                          else head ms
-
-chevrons (_:[]) (Interact m) = Chevron Up "Cancel" View Nothing : markerActions m
-chevrons _ (Interact m)      = Chevron Up "Back" (Select m) Nothing : markerActions m
--}
-
-{-
-- Changed for testing
-- data Mode = View
-          | Select Marker
-          | Interact Marker
-          deriving (Show, Eq, Ord)
--}
+chevron (Just side) (_:[]) = [Chevron side (show side)]
+chevron _ _ = []
 
 data Mode = Idle
           | Running
@@ -313,8 +244,10 @@ data ARState = ARState { width    :: Int
                        , height   :: Int
                        , useRects :: Bool
                        , dist     :: Int
-                       , dispSeq  :: [Maybe Side]
+                       , unshown  :: [Maybe Side]
+                       , shown    :: [Maybe Side]
                        }
+             deriving (Show)
 
 dropIO :: Reader ARState a -> ReaderT ARState IO a
 dropIO = mapReaderT (return . runIdentity)
@@ -341,44 +274,60 @@ main = do success <- initialize
           width <- fromIntegral <$> getWidth
           height <- fromIntegral <$> getHeight
           ds <- evalRandIO dispSequence
-          putStrLn $ "Sequence: " ++ show ds
-          evalStateT (loop Idle Nothing) $ ARState width height False 0 ds
+          putStrLn $ "Display sequence: " ++ show ds
+          evalStateT (loop Idle) $ ARState width height False 0 ds []
 
-loop :: Mode -> Maybe Chevron -> StateT ARState IO ()
-loop mode selected = do
+loop :: Mode -> StateT ARState IO ()
+loop mode = do
         liftIO nextFrame
         markers <- liftIO getMarkers
-        side <- head <$> gets dispSeq
-        liftIO . putStrLn $ "Side: " ++ show side
-        let chevs = chevrons side markers mode
+        liftIO $ mapM_ (drawMarker red) markers
         key <- liftIO getKey
-        when (key /= KeyNone) . liftIO . putStrLn . show $ key
+        when (key /= KeyNone) . liftIO . putStrLn $ "Key pressed: " ++ show key
         when (key == KeyEscape) $ liftIO exitSuccess
-        modify $ \s -> s { useRects = case key of
-                                          KeyToggleRects -> not $ useRects s
-                                          _              -> useRects s }
-        modify $ \s -> s { dist = case key of
-                                      KeyDist n -> n
-                                      _         -> dist s }
-        modify $ \s -> s { dispSeq = tail $ dispSeq s }
-        focus <- liftIO $ case listToMaybe markers of
-                              Just m  -> getPosition m >>= return . Just
-                              Nothing -> return Nothing
-        let selected' = case key of
-                            KeyLeft  -> find ((== Left) . chevSide) chevs
-                            KeyUp    -> find ((== Up) . chevSide) chevs
-                            KeyRight -> find ((== Right) . chevSide) chevs
-                            KeyDown  -> find ((== Down) . chevSide) chevs
-                            KeyNone  -> find ((== selected) . Just) chevs
-                            _        -> Nothing
-        liftIO $ mapM_ (\m -> case mode of
-                                  --Select s   | s == m -> drawMarker blue m
-                                  --Interact s | s == m -> drawMarker blue m
-                                  _                   -> drawMarker red m) markers
-        mapM_ (readOnly . drawChevron focus False) . filter ((/= selected') . Just) $ chevs
-        maybe (return ()) (readOnly . drawChevron focus True) selected'
-        when (null markers) $ loop Idle Nothing
-        case selected' of
-            Just c | selected == selected' && keySelect key -> liftIO (maybe (return ()) runAction (chevAction c)) >> loop (chevState c) Nothing
-            Nothing                                         -> loop mode Nothing
-            _                                               -> loop mode selected'
+        case mode of
+            Idle -> do
+                case key of
+                    KeyToggleRects -> do
+                        useRects' <- not <$> gets useRects
+                        liftIO . putStrLn $ "Set useRects to: " ++ show useRects'
+                        modify $ \s -> s { useRects = useRects' }
+
+                    KeyDist n      -> do
+                        liftIO . putStrLn $ "Set dist to: " ++ show n
+                        modify $ \s -> s { dist = n }
+
+                    KeySpace       -> do
+                        modify $ \s -> s { unshown = reverse (shown s) ++ unshown s
+                                         , shown = []
+                                         }
+                        s <- get
+                        liftIO . putStrLn $ "Beginning sequence with state: " ++ show s
+                        loop Running
+
+                    _ -> return ()
+
+            Running -> do
+                case key of
+                    KeySpace -> do
+                        liftIO $ putStrLn "Cancelling sequence"
+                        loop Idle
+                    _ -> return ()
+                (side, rest) <- (head &&& tail) <$> gets unshown
+                modify $ \s -> s { unshown = rest
+                                 , shown = side:shown s
+                                 }
+                liftIO . putStrLn $ "Side: " ++ show side
+                let chev = chevron side markers
+                focus <- liftIO $ case listToMaybe markers of
+                                      Just m  -> getPosition m >>= return . Just
+                                      Nothing -> return Nothing
+                mapM_ (readOnly . drawChevron focus False) $ chev
+                finished <- null <$> gets unshown
+                when finished $ do
+                    liftIO $ putStrLn "Finished sequence"
+                    loop Idle
+        when (null markers) $ do
+            liftIO $ putStrLn "ERROR: Lost marker lock"
+            loop Idle
+        loop mode
