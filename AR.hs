@@ -1,6 +1,6 @@
 {- LANGUAGE ForeignFunctionInterface -}
 
-import Prelude hiding (Left, Right)
+import Prelude hiding (Left, Right, log)
 
 import Control.Applicative
 import Control.Arrow (first, (&&&))
@@ -17,6 +17,8 @@ import Foreign
 import Foreign.C.String
 import Foreign.C.Types
 import System.Exit (exitSuccess)
+import System.IO
+import System.Locale
 import System.Random
 import System.Random.Shuffle
 
@@ -248,6 +250,7 @@ data ARState = ARState { width    :: Int
                        , unshown  :: [Maybe Side]
                        , shown    :: [Maybe Side]
                        , lastTick :: UTCTime
+                       , logFile  :: Handle
                        }
              deriving (Show)
 
@@ -257,6 +260,14 @@ dropIO = mapReaderT (return . runIdentity)
 readOnly :: ReaderT ARState IO a -> StateT ARState IO a
 readOnly r = do s <- get
                 liftIO $ runReaderT r s
+
+log :: String -> StateT ARState IO ()
+log s = do
+    now <- liftIO getCurrentTime
+    handle <- gets logFile
+    let str = show now ++ ": " ++ s
+    liftIO $ putStrLn str
+    liftIO $ hPutStrLn handle str
 
 dispSequence = do
     let basic = [Up, Down, Left, Right]
@@ -271,14 +282,16 @@ dispSequence = do
     addGaps = intersperse Nothing . map Just
 
 main :: IO ()
-main = do success <- initialize
-          unless (success == 1) $ error "Failed to initialize"
-          width <- fromIntegral <$> getWidth
-          height <- fromIntegral <$> getHeight
-          ds <- evalRandIO dispSequence
-          putStrLn $ "Display sequence: " ++ show ds
-          now <- liftIO getCurrentTime
-          evalStateT (loop Idle) $ ARState width height False 0 ds [] now
+main = do
+    success <- initialize
+    unless (success == 1) $ error "Failed to initialize"
+    width <- fromIntegral <$> getWidth
+    height <- fromIntegral <$> getHeight
+    ds <- evalRandIO dispSequence
+    putStrLn $ "Display sequence: " ++ show ds
+    now <- liftIO getCurrentTime
+    withFile (formatTime defaultTimeLocale "ar-%F-%T.log" now) AppendMode $ \handle ->
+        evalStateT (loop Idle) $ ARState width height False 0 ds [] now handle
 
 loop :: Mode -> StateT ARState IO ()
 loop mode = do
@@ -286,18 +299,18 @@ loop mode = do
         markers <- liftIO getMarkers
         liftIO $ mapM_ (drawMarker red) markers
         key <- liftIO getKey
-        when (key /= KeyNone) . liftIO . putStrLn $ "Key pressed: " ++ show key
+        when (key /= KeyNone) . log $ "Key pressed: " ++ show key
         when (key == KeyEscape) $ liftIO exitSuccess
         case mode of
             Idle -> do
                 case key of
                     KeyToggleRects -> do
                         useRects' <- not <$> gets useRects
-                        liftIO . putStrLn $ "Set useRects to: " ++ show useRects'
+                        log $ "Set useRects to: " ++ show useRects'
                         modify $ \s -> s { useRects = useRects' }
 
                     KeyDist n      -> do
-                        liftIO . putStrLn $ "Set dist to: " ++ show n
+                        log $ "Set dist to: " ++ show n
                         modify $ \s -> s { dist = n }
 
                     KeySpace       -> do
@@ -307,7 +320,7 @@ loop mode = do
                                          , lastTick = (addUTCTime (-100) now)
                                          }
                         s <- get
-                        liftIO . putStrLn $ "Beginning sequence with state: " ++ show s
+                        log $ "Beginning sequence with state: " ++ show s
                         loop Running
 
                     _ -> return ()
@@ -315,7 +328,7 @@ loop mode = do
             Running -> do
                 case key of
                     KeySpace -> do
-                        liftIO $ putStrLn "Cancelling sequence"
+                        log "Cancelling sequence"
                         loop Idle
                     _ -> return ()
                 now <- liftIO getCurrentTime
@@ -330,7 +343,7 @@ loop mode = do
                                                  , shown = side:shown s
                                                  , lastTick = now
                                                  }
-                                liftIO . putStrLn $ "Side: " ++ show side
+                                log $ "Side: " ++ show side
                                 return (Just side)
                             Nothing -> return Nothing
                     else Just . head <$> gets shown
@@ -342,9 +355,9 @@ loop mode = do
                                               Nothing -> return Nothing
                         mapM_ (readOnly . drawChevron focus False) $ chev
                     Nothing -> do
-                        liftIO $ putStrLn "Finished sequence"
+                        log "Finished sequence"
                         loop Idle
         when (null markers) $ do
-            liftIO $ putStrLn "ERROR: Lost marker lock"
+            log "ERROR: Lost marker lock"
             loop Idle
         loop mode
