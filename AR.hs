@@ -16,6 +16,7 @@ import Debug.Trace
 import Foreign
 import Foreign.C.String
 import Foreign.C.Types
+import System.Cmd
 import System.Exit (exitSuccess)
 import System.IO
 import System.Locale
@@ -240,6 +241,7 @@ chevron (Just side) (_:[]) = [Chevron side (show side)]
 chevron _ _ = []
 
 data Mode = Idle
+          | Beeping
           | Running
           deriving (Show, Eq, Ord)
 
@@ -269,6 +271,7 @@ log s = do
     liftIO $ putStrLn str
     liftIO $ hPutStrLn handle str
 
+{-
 dispSequence = do
     let basic = [Up, Down, Left, Right]
     let seq1 = Nothing:addGaps basic
@@ -280,6 +283,10 @@ dispSequence = do
     return $ intercalate [Nothing] [seq1, seq2, seq3, seq4, seq5, seq6]
   where
     addGaps = intersperse Nothing . map Just
+-}
+dispSequence = fmap (intersperse Nothing . map Just) . shuffleM . take (25 * length all) . cycle $ all
+  where
+    all = [Up, Down, Left, Right]
 
 main :: IO ()
 main = do
@@ -321,9 +328,13 @@ loop mode = do
                                          }
                         s <- get
                         log $ "Beginning sequence with state: " ++ show s
-                        loop Running
+                        loop Beeping
 
                     _ -> return ()
+
+            Beeping -> do
+                liftIO $ rawSystem "aplay" ["beep.wav"]
+                loop Running
 
             Running -> do
                 case key of
