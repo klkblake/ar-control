@@ -249,7 +249,7 @@ data ARState = ARState { width    :: Int
                        , dist     :: Int
                        , unshown  :: [Maybe Side]
                        , shown    :: [Maybe Side]
-                       , lastTick :: UTCTime
+                       , target   :: UTCTime
                        , logFile  :: Handle
                        }
              deriving (Show)
@@ -317,7 +317,7 @@ loop mode = do
                         now <- liftIO getCurrentTime
                         modify $ \s -> s { unshown = reverse (shown s) ++ unshown s
                                          , shown = []
-                                         , lastTick = (addUTCTime (-100) now)
+                                         , target = now
                                          }
                         s <- get
                         log $ "Beginning sequence with state: " ++ show s
@@ -332,16 +332,18 @@ loop mode = do
                         loop Idle
                     _ -> return ()
                 now <- liftIO getCurrentTime
-                lastTick' <- gets lastTick
+                target' <- gets target
                 side' <-
-                    if diffUTCTime now lastTick' >= 1
+                    if diffUTCTime now target' >= 0
                     then do
                         (side', rest) <- (listToMaybe &&& tail) <$> gets unshown
                         case side' of
                             Just side -> do
                                 modify $ \s -> s { unshown = rest
                                                  , shown = side:shown s
-                                                 , lastTick = now
+                                                 , target = addUTCTime (case side of
+                                                                            Just _ -> 1
+                                                                            Nothing -> 1.5) now
                                                  }
                                 log $ "Side: " ++ show side
                                 return (Just side)
