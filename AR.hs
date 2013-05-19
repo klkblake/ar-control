@@ -277,7 +277,7 @@ dispSequence = do
     let seq4 = map Just [Left, Right, Left]
     let seq5 = map Just [Right, Up, Left, Down, Right] 
     let seq6 = map Just [Left, Up, Right, Down, Left] 
-    return $ concat . intersperse [Nothing] $ [seq1, seq2, seq3, seq4, seq5, seq6]
+    return $ intercalate [Nothing] [seq1, seq2, seq3, seq4, seq5, seq6]
   where
     addGaps = intersperse Nothing . map Just
 
@@ -302,7 +302,7 @@ loop mode = do
         when (key /= KeyNone) . log $ "Key pressed: " ++ show key
         when (key == KeyEscape) $ liftIO exitSuccess
         case mode of
-            Idle -> do
+            Idle ->
                 case key of
                     KeyToggleRects -> do
                         useRects' <- not <$> gets useRects
@@ -351,9 +351,9 @@ loop mode = do
                     Just side -> do
                         let chev = chevron side markers
                         focus <- liftIO $ case listToMaybe markers of
-                                              Just m  -> getPosition m >>= return . Just
+                                              Just m  -> liftM Just $ getPosition m 
                                               Nothing -> return Nothing
-                        mapM_ (readOnly . drawChevron focus False) $ chev
+                        mapM_ (readOnly . drawChevron focus False) chev
                     Nothing -> do
                         log "Finished sequence"
                         loop Idle
