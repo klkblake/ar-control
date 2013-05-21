@@ -1,4 +1,4 @@
-{- LANGUAGE ForeignFunctionInterface -}
+{-# LANGUAGE ForeignFunctionInterface #-}
 
 import Prelude hiding (Left, Right, log)
 
