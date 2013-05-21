@@ -4,6 +4,7 @@ import Prelude hiding (Left, Right, log)
 
 import Control.Applicative
 import Control.Arrow (first, (&&&))
+import Control.Concurrent (forkIO)
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Random
@@ -13,7 +14,7 @@ import Data.List
 import Data.Maybe
 import Data.Time
 import Debug.Trace
-import Foreign
+import Foreign hiding (void)
 import Foreign.C.String
 import Foreign.C.Types
 import System.Cmd
@@ -241,7 +242,7 @@ chevron (Just side) (_:[]) = [Chevron side (show side)]
 chevron _ _ = []
 
 data Mode = Idle
-          | Beeping
+          | Beeping Int
           | Running
           deriving (Show, Eq, Ord)
 
@@ -306,6 +307,8 @@ loop mode = do
         key <- liftIO getKey
         when (key /= KeyNone) . log $ "Key pressed: " ++ show key
         when (key == KeyEscape) $ liftIO exitSuccess
+        now <- liftIO getCurrentTime
+        target' <- gets target
         case mode of
             Idle ->
                 case key of
@@ -319,7 +322,6 @@ loop mode = do
                         modify $ \s -> s { dist = n }
 
                     KeySpace       -> do
-                        now <- liftIO getCurrentTime
                         ds <- liftIO $ evalRandIO dispSequence
                         modify $ \s -> s { unshown = ds
                                          , shown = []
@@ -327,22 +329,27 @@ loop mode = do
                                          }
                         s <- get
                         log $ "Beginning sequence with state: " ++ show s
-                        loop Beeping
+                        loop $ Beeping 5
 
                     _ -> return ()
 
-            Beeping -> do
-                liftIO $ rawSystem "aplay" ["beep.wav"]
-                loop Running
+            Beeping n -> do
+                when (n == 0) $ loop Running
+                when (diffUTCTime now target' >= 0) $ do
+                    liftIO . void . forkIO . void $ rawSystem "aplay" ["beep.wav"]
+                    log $ "Beeping: " ++ show n
+                    modify $ \s -> s { target = addUTCTime 1 now }
+                    loop $ Beeping (n-1)
 
             Running -> do
+                when (null markers) $ do
+                    log "ERROR: Lost marker lock"
+                    loop Idle
                 case key of
                     KeySpace -> do
                         log "Cancelling sequence"
                         loop Idle
                     _ -> return ()
-                now <- liftIO getCurrentTime
-                target' <- gets target
                 side' <-
                     if diffUTCTime now target' >= 0
                     then do
@@ -358,7 +365,11 @@ loop mode = do
                                 log $ "Side: " ++ show side
                                 return (Just side)
                             Nothing -> return Nothing
-                    else Just . head <$> gets shown
+                    else do
+                        s <- listToMaybe <$> gets shown
+                        return $ case s of
+                                     Just s  -> Just s
+                                     Nothing -> Just Nothing
                 case side' of
                     Just side -> do
                         let chev = chevron side markers
@@ -369,7 +380,4 @@ loop mode = do
                     Nothing -> do
                         log "Finished sequence"
                         loop Idle
-        when (null markers) $ do
-            log "ERROR: Lost marker lock"
-            loop Idle
         loop mode
