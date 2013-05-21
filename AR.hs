@@ -294,11 +294,9 @@ main = do
     unless (success == 1) $ error "Failed to initialize"
     width <- fromIntegral <$> getWidth
     height <- fromIntegral <$> getHeight
-    ds <- evalRandIO dispSequence
-    putStrLn $ "Display sequence: " ++ show ds
     now <- liftIO getCurrentTime
     withFile (formatTime defaultTimeLocale "ar-%F-%T.log" now) AppendMode $ \handle ->
-        evalStateT (loop Idle) $ ARState width height False 0 ds [] now handle
+        evalStateT (loop Idle) $ ARState width height False 0 [] [] now handle
 
 loop :: Mode -> StateT ARState IO ()
 loop mode = do
@@ -322,7 +320,8 @@ loop mode = do
 
                     KeySpace       -> do
                         now <- liftIO getCurrentTime
-                        modify $ \s -> s { unshown = reverse (shown s) ++ unshown s
+                        ds <- liftIO $ evalRandIO dispSequence
+                        modify $ \s -> s { unshown = ds
                                          , shown = []
                                          , target = now
                                          }
