@@ -344,6 +344,7 @@ loop mode = do
             Running -> do
                 when (null markers) $ do
                     log "ERROR: Lost marker lock"
+                    liftIO . void . forkIO . void $ rawSystem "aplay" ["fail.wav"]
                     loop Idle
                 case key of
                     KeySpace -> do
