@@ -78,6 +78,8 @@ extern "C" {
 	}
 
 	void nextFrame() {
+		Point p1(width/2-1, height/2-1);
+		rectangle(overlay, p1, Point(p1.x+2, p1.y+2), Scalar(0, 255, 128, 255), CV_FILLED);
 		blend(img, overlay);
 		imshow(WIN, img);
 		cap->read(input);
