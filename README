@@ -1,0 +1,7 @@
+AR Control
+==========
+
+Depends on:
+ - aruco (forked version: http://github.com/piponazo/aruco)
+   - OpenCV (known to work with 2.4.5)
+ - aplay (for the beeps)
